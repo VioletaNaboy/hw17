@@ -1,4 +1,3 @@
-// main.go
 package main
 
 import (
@@ -14,8 +13,11 @@ func main() {
 
 	cache := NewCache()
 
+	tasksMemoryStore := make([]Task, 0)
+
 	tasks := TaskResource{
-		cache: cache,
+		cache:       cache,
+		memoryStore: &tasksMemoryStore,
 	}
 
 	mux.HandleFunc("GET /tasks", tasks.GetAll)
@@ -30,7 +32,8 @@ func main() {
 }
 
 type TaskResource struct {
-	cache *Cache
+	cache       *Cache
+	memoryStore *[]Task
 }
 
 func (t *TaskResource) GetAll(w http.ResponseWriter, r *http.Request) {
@@ -39,20 +42,26 @@ func (t *TaskResource) GetAll(w http.ResponseWriter, r *http.Request) {
 
 	err := t.cache.Get(cacheKey, &tasks)
 	if err == nil {
-		json.NewEncoder(w).Encode(tasks)
+		if err := json.NewEncoder(w).Encode(tasks); err != nil {
+			http.Error(w, "Failed to encode tasks", http.StatusInternalServerError)
+		}
+		fmt.Println("Retrieved tasks from cache.")
 		return
+	} else {
+		fmt.Printf("Cache miss or error: %v\n", err)
 	}
 
-	// Redis cache miss; return empty list
-	tasks = []Task{}
+	tasks = *t.memoryStore
 
-	err = json.NewEncoder(w).Encode(tasks)
-	if err != nil {
+	if err := json.NewEncoder(w).Encode(tasks); err != nil {
 		http.Error(w, "Failed to encode tasks", http.StatusInternalServerError)
 		return
 	}
 
-	t.cache.Set(cacheKey, tasks, 10*time.Minute)
+	if err := t.cache.Set(cacheKey, tasks, 10*time.Minute); err != nil {
+		fmt.Printf("Failed to set cache: %v\n", err)
+	}
+	fmt.Println("Retrieved tasks from memory store and updated cache.")
 }
 
 func (t *TaskResource) CreateOne(w http.ResponseWriter, r *http.Request) {
@@ -62,30 +71,28 @@ func (t *TaskResource) CreateOne(w http.ResponseWriter, r *http.Request) {
 	}
 
 	var task Task
-	err := json.NewDecoder(r.Body).Decode(&task)
-	if err != nil {
+	decoder := json.NewDecoder(r.Body)
+	if err := decoder.Decode(&task); err != nil {
 		http.Error(w, "Failed to decode task", http.StatusBadRequest)
 		return
 	}
 
-	tasksKey := "tasks_all"
-	var tasks []Task
-	err = t.cache.Get(tasksKey, &tasks)
-	if err == nil {
-		task.ID = len(tasks) + 1
-		tasks = append(tasks, task)
-		t.cache.Set(tasksKey, tasks, 10*time.Minute)
-	} else {
-		task.ID = 1
-		tasks = []Task{task}
-		t.cache.Set(tasksKey, tasks, 10*time.Minute)
+	tasks := *t.memoryStore
+	task.ID = len(tasks) + 1
+	tasks = append(tasks, task)
+	*t.memoryStore = tasks
+
+	fmt.Printf("Task created: %+v\n", task)
+
+	if err := t.cache.Set("tasks_all", tasks, 10*time.Minute); err != nil {
+		fmt.Printf("Failed to set cache: %v\n", err)
 	}
 
-	err = json.NewEncoder(w).Encode(task)
-	if err != nil {
+	if err := json.NewEncoder(w).Encode(task); err != nil {
 		http.Error(w, "Failed to encode task", http.StatusInternalServerError)
 		return
 	}
+	fmt.Println("Task added to memory store and cache updated.")
 }
 
 func (t *TaskResource) UpdateOne(w http.ResponseWriter, r *http.Request) {
@@ -101,14 +108,7 @@ func (t *TaskResource) UpdateOne(w http.ResponseWriter, r *http.Request) {
 		return
 	}
 
-	tasksKey := "tasks_all"
-	var tasks []Task
-	err = t.cache.Get(tasksKey, &tasks)
-	if err != nil {
-		http.Error(w, "Failed to get tasks", http.StatusInternalServerError)
-		return
-	}
-
+	tasks := *t.memoryStore
 	updated := false
 	for i, t := range tasks {
 		if t.ID == task.ID {
@@ -123,13 +123,19 @@ func (t *TaskResource) UpdateOne(w http.ResponseWriter, r *http.Request) {
 		return
 	}
 
-	t.cache.Set(tasksKey, tasks, 10*time.Minute)
+	*t.memoryStore = tasks
 
-	err = json.NewEncoder(w).Encode(task)
-	if err != nil {
+	fmt.Printf("Task updated: %+v\n", task)
+
+	if err := t.cache.Set("tasks_all", tasks, 10*time.Minute); err != nil {
+		fmt.Printf("Failed to set cache: %v\n", err)
+	}
+
+	if err := json.NewEncoder(w).Encode(task); err != nil {
 		http.Error(w, "Failed to encode task", http.StatusInternalServerError)
 		return
 	}
+	fmt.Println("Task updated in memory store and cache updated.")
 }
 
 func (t *TaskResource) DeleteOne(w http.ResponseWriter, r *http.Request) {
@@ -145,14 +151,7 @@ func (t *TaskResource) DeleteOne(w http.ResponseWriter, r *http.Request) {
 		return
 	}
 
-	tasksKey := "tasks_all"
-	var tasks []Task
-	err = t.cache.Get(tasksKey, &tasks)
-	if err != nil {
-		http.Error(w, "Failed to get tasks", http.StatusInternalServerError)
-		return
-	}
-
+	tasks := *t.memoryStore
 	updated := false
 	for i, t := range tasks {
 		if t.ID == id {
@@ -167,7 +166,14 @@ func (t *TaskResource) DeleteOne(w http.ResponseWriter, r *http.Request) {
 		return
 	}
 
-	t.cache.Set(tasksKey, tasks, 10*time.Minute)
+	*t.memoryStore = tasks
+
+	fmt.Printf("Task deleted with ID: %d\n", id)
+
+	if err := t.cache.Set("tasks_all", tasks, 10*time.Minute); err != nil {
+		fmt.Printf("Failed to set cache: %v\n", err)
+	}
 
 	w.WriteHeader(http.StatusNoContent)
+	fmt.Println("Task deleted from memory store and cache updated.")
 }

@@ -16,7 +16,7 @@ type Cache struct {
 
 func NewCache() *Cache {
 	rdb := redis.NewClient(&redis.Options{
-		Addr: "localhost:6379",
+		Addr: "redis:6379",
 	})
 
 	return &Cache{client: rdb}
